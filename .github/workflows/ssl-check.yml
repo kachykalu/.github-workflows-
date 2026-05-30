@@ -1,0 +1,23 @@
+name: SSL Certificate Check
+
+  on:
+    schedule:
+      - cron: '0 6,18 * * *'   # 6 AM and 6 PM UTC daily
+    workflow_dispatch:           # manual trigger / API dispatch from the
+  dashboard
+
+  jobs:
+    check:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+
+        - uses: actions/setup-node@v4
+          with:
+            node-version: '20'
+
+        - name: Run SSL checks and post to worker
+          run: node .github/scripts/ssl-check.js
+          env:
+            WORKER_URL:        ${{ secrets.WORKER_URL }}
+            SSL_INGEST_TOKEN:  ${{ secrets.SSL_INGEST_TOKEN }}
