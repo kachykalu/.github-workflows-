@@ -1,25 +1,9 @@
 'use strict';
-const tls   = require('tls');
+const tls = require('tls');
 
-const DEFAULT_HOSTS = [
-  'penlite.leadway-pensure.com',
-  'apa-ppp.leadway-pensure.com',
-  'mpinterest.leadway-pensure.com',
-  'surecal.leadway-pensure.com',
-  'joinus.leadway-pensure.com',
-  'portal.leadway-pensure.com',
-  'employerportal.leadway-pensure.com',
-  'mapps.leadway-pensure.com',
-  'lppfaselfservice.leadway-pensure.com',
-  'lpmapps.leadway-pensure.com:8443',
-  'ponline2.leadway-pensure.com',
-  'bc.leadway-pensure.com',
-  'p-online.leadway-pensure.com',
-  'nav.leadway-pensure.com',
-  'lisa.leadway-pensure.com',
-  'mx.leadway-pensure.com',
-  'leadway-pensure.com',
-];
+// Hosts come from the Worker's /api/ssl/hosts endpoint (all tenants). This is
+// only a fallback if that call fails — left empty so nothing is hardcoded.
+const DEFAULT_HOSTS = [];
 
 const SSL_WARN_DAYS = 30;
 const SSL_CRIT_DAYS = 7;
@@ -34,13 +18,18 @@ function sslHostFromUrl(rawUrl) {
   }
 }
 
-async function loadHosts(workerUrl) {
+async function loadHosts(workerUrl, token) {
+  // /api/ssl/hosts returns every host across all tenants — recomputed live, so
+  // newly added apps appear and deleted ones drop off automatically.
   try {
-    const res = await fetch(`${workerUrl}/api/apps`);
+    const res = await fetch(`${workerUrl}/api/ssl/hosts`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const apps = await res.json();
+    const body = await res.json();
+    const list = Array.isArray(body) ? body : (body.hosts || []);
     const hosts = Array.from(new Set(
-      apps.map(app => sslHostFromUrl(app.url)).filter(Boolean)
+      list.map(h => h.host || sslHostFromUrl(h.url)).filter(Boolean)
     ));
     return hosts.length ? hosts : DEFAULT_HOSTS;
   } catch (e) {
@@ -107,11 +96,10 @@ async function main() {
     process.exit(1);
   }
 
-  const hosts = await loadHosts(workerUrl);
+  const hosts = await loadHosts(workerUrl, token);
   console.log(`Checking ${hosts.length} hosts...\n`);
   const results = await Promise.all(hosts.map(checkHost));
 
-  // Print summary
   for (const r of results) {
     const icon = r.state === 'ok' ? '✅' : r.state === 'warn' ? '⚠️ ' : r.state === 'critical' ? '🔴' : '❌';
     const days = r.daysLeft !== null ? `${r.daysLeft}d` : r.error;
@@ -131,7 +119,7 @@ async function main() {
   }
 
   const body = await res.json();
-  console.log(`Done — ${body.count} results stored in KV.`);
+  console.log(`Done — ${body.count} results stored.`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
