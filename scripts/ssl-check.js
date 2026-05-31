@@ -1,8 +1,8 @@
 'use strict';
 const tls = require('tls');
 
-// Hosts come from the Worker's /api/ssl/hosts endpoint (all tenants). This is
-// only a fallback if that call fails — left empty so nothing is hardcoded.
+// Hosts come from the Worker's /api/ssl/hosts endpoint (all tenants). Empty
+// fallback so nothing is hardcoded — a token problem shows as "0 hosts".
 const DEFAULT_HOSTS = [];
 
 const SSL_WARN_DAYS = 30;
@@ -19,8 +19,6 @@ function sslHostFromUrl(rawUrl) {
 }
 
 async function loadHosts(workerUrl, token) {
-  // /api/ssl/hosts returns every host across all tenants — recomputed live, so
-  // newly added apps appear and deleted ones drop off automatically.
   try {
     const res = await fetch(`${workerUrl}/api/ssl/hosts`, {
       headers: { 'Authorization': `Bearer ${token}` },
@@ -56,33 +54,20 @@ function checkHost(host) {
         clearTimeout(timer);
         const cert = sock.getPeerCertificate();
         sock.destroy();
-
-        if (!cert?.valid_to) {
-          out.error = 'No cert data'; out.state = 'err';
-          return resolve(out);
-        }
-
-        const expiry   = new Date(cert.valid_to);
-        const now      = new Date();
-        out.valid      = true;
-        out.subject    = cert.subject?.CN || '—';
-        out.issuer     = cert.issuer?.CN  || cert.issuer?.O || '—';
-        out.expires    = expiry.toISOString().slice(0, 10);
-        out.daysLeft   = Math.floor((expiry - now) / 86400000);
-        out.state      = out.daysLeft <= SSL_CRIT_DAYS ? 'critical'
-                       : out.daysLeft <= SSL_WARN_DAYS ? 'warn' : 'ok';
+        if (!cert?.valid_to) { out.error = 'No cert data'; out.state = 'err'; return resolve(out); }
+        const expiry = new Date(cert.valid_to);
+        const now    = new Date();
+        out.valid    = true;
+        out.subject  = cert.subject?.CN || '—';
+        out.issuer   = cert.issuer?.CN  || cert.issuer?.O || '—';
+        out.expires  = expiry.toISOString().slice(0, 10);
+        out.daysLeft = Math.floor((expiry - now) / 86400000);
+        out.state    = out.daysLeft <= SSL_CRIT_DAYS ? 'critical' : out.daysLeft <= SSL_WARN_DAYS ? 'warn' : 'ok';
         resolve(out);
       });
-
-      sock.on('error', e => {
-        clearTimeout(timer);
-        out.error = e.message.slice(0, 80); out.state = 'err';
-        resolve(out);
-      });
-    } catch(e) {
-      clearTimeout(timer);
-      out.error = e.message.slice(0, 80); out.state = 'err';
-      resolve(out);
+      sock.on('error', e => { clearTimeout(timer); out.error = e.message.slice(0, 80); out.state = 'err'; resolve(out); });
+    } catch (e) {
+      clearTimeout(timer); out.error = e.message.slice(0, 80); out.state = 'err'; resolve(out);
     }
   });
 }
@@ -90,20 +75,14 @@ function checkHost(host) {
 async function main() {
   const workerUrl = process.env.WORKER_URL;
   const token     = process.env.SSL_INGEST_TOKEN;
-
-  if (!workerUrl || !token) {
-    console.error('Missing WORKER_URL or SSL_INGEST_TOKEN env vars');
-    process.exit(1);
-  }
+  if (!workerUrl || !token) { console.error('Missing WORKER_URL or SSL_INGEST_TOKEN'); process.exit(1); }
 
   const hosts = await loadHosts(workerUrl, token);
   console.log(`Checking ${hosts.length} hosts...\n`);
   const results = await Promise.all(hosts.map(checkHost));
-
   for (const r of results) {
     const icon = r.state === 'ok' ? '✅' : r.state === 'warn' ? '⚠️ ' : r.state === 'critical' ? '🔴' : '❌';
-    const days = r.daysLeft !== null ? `${r.daysLeft}d` : r.error;
-    console.log(`${icon}  ${r.host.padEnd(40)} ${days}`);
+    console.log(`${icon}  ${r.host.padEnd(40)} ${r.daysLeft !== null ? r.daysLeft + 'd' : r.error}`);
   }
 
   console.log('\nPosting results to worker...');
@@ -112,12 +91,7 @@ async function main() {
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
     body:    JSON.stringify(results),
   });
-
-  if (!res.ok) {
-    console.error(`Worker rejected the payload: ${res.status} ${await res.text()}`);
-    process.exit(1);
-  }
-
+  if (!res.ok) { console.error(`Worker rejected the payload: ${res.status} ${await res.text()}`); process.exit(1); }
   const body = await res.json();
   console.log(`Done — ${body.count} results stored.`);
 }
